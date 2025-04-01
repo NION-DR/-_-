@@ -2,11 +2,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-import argparse
 from typing import Optional, Tuple
 
 class BoxplotGenerator:
-    """Визуализация распределения данных через квартили и выбросы"""
+    """Генератор боксплотов с автоматическим определением масштаба"""
     
     def __init__(self, data: pd.DataFrame, column: str, output_dir: str, 
                  limits: Optional[Tuple[float, float]] = None):
@@ -14,17 +13,16 @@ class BoxplotGenerator:
         self.column = column
         self.output_dir = output_dir
         self.limits = limits
-        os.makedirs(output_dir, exist_ok=True)
 
     def _determine_scale(self, series: pd.Series, stats: dict) -> str:
-        """Выбор масштаба оси Y на основе диапазона данных"""   
+        """Автоматический выбор шкалы для визуализации"""
         data_range = stats['upper'] - stats['lower']
         if (series.max() - stats['upper']) > 10*data_range or (stats['lower'] - series.min()) > 10*data_range:
             return 'log' if stats['lower'] > 0 else 'symlog'
         return 'linear'
 
     def _calculate_statistics(self, series: pd.Series) -> dict:
-        """Расчет ключевых статистик: квартили, медиана, границы выбросов"""
+        """Расчет статистик для боксплота"""
         stats = {
             'Q1': np.percentile(series, 25),
             'Q3': np.percentile(series, 75),
@@ -79,7 +77,7 @@ class BoxplotGenerator:
         plt.close()
 
 class HistogramGenerator:
-    """Анализ распределения данных с выделением аномальных значений"""
+    """Генератор гистограмм с выделением выбросов"""
     
     def __init__(self, data: pd.DataFrame, column: str, output_dir: str,
                  limits: Optional[Tuple[float, float]] = None):
@@ -87,10 +85,9 @@ class HistogramGenerator:
         self.column = column
         self.output_dir = output_dir
         self.limits = limits
-        os.makedirs(output_dir, exist_ok=True)
 
     def _calculate_statistics(self, series: pd.Series) -> dict:
-        """Определение границ и подсчет выбросов (ручные или автоматические)"""
+        """Расчет статистик для гистограммы"""
         stats = {
             'lower': self.limits[0] if self.limits else series.min(),
             'upper': self.limits[1] if self.limits else series.max(),
@@ -125,7 +122,7 @@ class HistogramGenerator:
         plt.close()
 
 class ScatterPlotGenerator:
-    """Визуализация взаимосвязи двух переменных с оптимизацией отображения"""
+    """Генератор точечных графиков с субсэмплингом"""
     
     def __init__(self, data: pd.DataFrame, x_col: str, y_col: str, 
                  output_dir: str, x_limits: Optional[Tuple[float, float]] = None,
@@ -136,19 +133,33 @@ class ScatterPlotGenerator:
         self.output_dir = output_dir
         self.x_limits = x_limits
         self.y_limits = y_limits
-        os.makedirs(output_dir, exist_ok=True)
+
+    def _subsample_data(self, df: pd.DataFrame, x_min: float, x_max: float,
+                       y_min: float, y_max: float) -> pd.DataFrame:
+        """Субсэмплинг данных для визуализации"""
+        target_size = max(1, len(df) // 20)
+        inliers = df[
+            (df[self.x_col].between(x_min, x_max)) & 
+            (df[self.y_col].between(y_min, y_max))
+        ]
+        outliers = df[
+            (~df[self.x_col].between(x_min, x_max)) |
+            (~df[self.y_col].between(y_min, y_max))
+        ]
+        
+        if len(inliers) > target_size:
+            return pd.concat([inliers.sample(target_size), outliers])
+        return pd.concat([inliers, outliers.sample(min(target_size, len(outliers)))])
 
     def generate(self):
         """Генерация и сохранение точечного графика"""
         clean_df = self.data[[self.x_col, self.y_col]].dropna()
         if clean_df.empty:
-            raise ValueError("Нет данных для построения после удаления NaN")
+            raise ValueError("Нет данных для построения")
 
-        # Определение лимитов
         x_min, x_max = self.x_limits or (clean_df[self.x_col].min(), clean_df[self.x_col].max())
         y_min, y_max = self.y_limits or (clean_df[self.y_col].min(), clean_df[self.y_col].max())
 
-        # Субсэмплинг данных
         subsample = self._subsample_data(clean_df, x_min, x_max, y_min, y_max)
         
         plt.figure(figsize=(12, 8))
@@ -166,107 +177,150 @@ class ScatterPlotGenerator:
         plt.savefig(os.path.join(self.output_dir, filename), bbox_inches='tight')
         plt.close()
 
-    def _subsample_data(self, df: pd.DataFrame, x_min: float, x_max: float,
-                       y_min: float, y_max: float) -> pd.DataFrame:
-        """Субсэмплинг данных: сохранение выбросов при сокращении основного набора"""
-        target_size = max(1, len(df) // 20)
-        inliers = df[
-            (df[self.x_col].between(x_min, x_max)) & 
-            (df[self.y_col].between(y_min, y_max))
-        ]
-        outliers = df[
-            (~df[self.x_col].between(x_min, x_max)) |
-            (~df[self.y_col].between(y_min, y_max))
-        ]
+class Visualizer:
+    """Основной интерфейс для работы с графиками"""
+    
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        self.data = self._load_data()
         
-        if len(inliers) > target_size:
-            return pd.concat([inliers.sample(target_size), outliers])
-        return pd.concat([inliers, outliers.sample(min(target_size, len(outliers)))])
+    def _load_data(self) -> pd.DataFrame:
+        """Автоматическое определение формата файла"""
+        if self.file_path.endswith('.tsv'):
+            return pd.read_csv(self.file_path, sep='\t')
+        elif self.file_path.endswith('.csv'):
+            return pd.read_csv(self.file_path)
+        raise ValueError("Поддерживаются только CSV/TSV файлы")
+
+    def create_plot(self, plot_type: str, **kwargs):
+        """
+        Создание графика со следующими параметрами:
+        - plot_type: 'hist', 'box', 'scatter'
+        - column: для hist/box
+        - x_col/y_col: для scatter
+        - limits: для hist/box
+        - x_limits/y_limits: для scatter
+        - output_dir: папка для сохранения
+        """
+        try:
+            output_dir = kwargs.get('output_dir', 'visualizations')
+            os.makedirs(output_dir, exist_ok=True)
+
+            if plot_type in ['hist', 'box']:
+                self._create_single_plot(plot_type, output_dir, kwargs)
+            elif plot_type == 'scatter':
+                self._create_scatter_plot(output_dir, kwargs)
+            else:
+                raise ValueError("Неподдерживаемый тип графика")
+
+            print(f"✓ График успешно сохранен в: {output_dir}")
+        
+        except Exception as e:
+            print(f"✗ Ошибка: {str(e)}")
+            exit(1)
+
+    def _create_single_plot(self, plot_type: str, output_dir: str, params: dict):
+        column = params.get('column')
+        if not column:
+            raise ValueError("Необходимо указать column")
+
+        limits = params.get('limits')
+        
+        if plot_type == 'hist':
+            HistogramGenerator(self.data, column, output_dir, limits).generate()
+        else:
+            BoxplotGenerator(self.data, column, output_dir, limits).generate()
+
+    def _create_scatter_plot(self, output_dir: str, params: dict):
+        x_col = params.get('x_col')
+        y_col = params.get('y_col')
+        if not x_col or not y_col:
+            raise ValueError("Необходимо указать x_col и y_col")
+
+        ScatterPlotGenerator(
+            self.data,
+            x_col,
+            y_col,
+            output_dir,
+            params.get('x_limits'),
+            params.get('y_limits')
+        ).generate()
+
+def get_file_path():
+    """Получение пути к файлу данных"""
+    while True:
+        path = input("▸ Введите путь к файлу данных (*.csv/*.tsv): ").strip()
+        if not os.path.isfile(path):
+            print("✗ Файл не найден!")
+            continue
+        if not (path.endswith('.csv') or path.endswith('.tsv')):
+            print("✗ Поддерживаются только CSV/TSV файлы!")
+            continue
+        return path
+
+def get_plot_type():
+    """Выбор типа графика"""
+    while True:
+        plot_type = input("▸ Выберите тип графика (hist/box/scatter): ").lower().strip()
+        if plot_type in ['hist', 'box', 'scatter']:
+            return plot_type
+        print("✗ Некорректный тип! Допустимые значения: hist, box, scatter")
+
+def get_column(columns: list, purpose: str) -> str:
+    """Выбор столбца из списка"""
+    while True:
+        print("\nДоступные столбцы:", ', '.join(columns))
+        col = input(f"▸ Введите название столбца для {purpose}: ").strip()
+        if col in columns:
+            return col
+        print("✗ Столбец не найден!")
+
+def get_limits(axis_name: str) -> Optional[Tuple[float, float]]:
+    """Ввод границ значений"""
+    while True:
+        try:
+            limits = input(
+                f"▸ Введите границы для {axis_name} (мин макс) или Enter для автоопределения: "
+            ).strip()
+            if not limits:
+                return None
+            lower, upper = map(float, limits.split())
+            if lower >= upper:
+                print("✗ Нижняя граница должна быть меньше верхней!")
+                continue
+            return (lower, upper)
+        except:
+            print("✗ Некорректный ввод! Пример: 0 100 или 50.5 200.75")
 
 def main():
-    # Парсинг аргументов командной строки
-    parser = argparse.ArgumentParser(
-        description='Генератор визуализаций для CSV файлов',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    # Базовые параметры для всех графиков
-    parser.add_argument('plot_type', choices=['boxplot', 'histogram', 'scatter'],
-                       help='Тип визуализации')
-    parser.add_argument('--data', required=True, 
-                       help='Путь к CSV файлу с данными')
-    parser.add_argument('--sep', default=',', 
-                       help='Разделитель в CSV файле')
-    parser.add_argument('--output', default='visualizations', 
-                       help='Выходная директория для графиков')
+    """Выполнение программы"""
+    # Шаг 1: Получение файла данных
+    file_path = get_file_path()
+    visualizer = Visualizer(file_path)
     
-    # Параметры для графиков с одним столбцом
-    parser.add_argument('--column', 
-                       help='Имя столбца для анализа (для boxplot и histogram)')
-    parser.add_argument('--limits', nargs=2, type=float, 
-                       help='Границы значений в формате "мин макс"')
+    # Шаг 2: Выбор типа графика
+    plot_type = get_plot_type()
     
-    # Параметры для scatter plot
-    parser.add_argument('--x-col', 
-                       help='Столбец для оси X (только для scatter)')
-    parser.add_argument('--y-col', 
-                       help='Столбец для оси Y (только для scatter)')
-    parser.add_argument('--x-limits', nargs=2, type=float, 
-                       help='Границы по оси X в формате "мин макс"')
-    parser.add_argument('--y-limits', nargs=2, type=float,
-                       help='Границы по оси Y в формате "мин макс"')
-
-    args = parser.parse_args()
-
-    try:
-        # Загрузка данных из файла
-        df = pd.read_csv(args.data, sep=args.sep)
-        print(f"Успешно загружено {len(df)} строк из файла {args.data}")
-        
-        # Создание визуализации в зависимости от типа графика
-        if args.plot_type in ['boxplot', 'histogram']:
-            if not args.column:
-                raise ValueError("Для этого типа графика необходимо указать --column")
-            
-            if args.plot_type == 'boxplot':
-                generator = BoxplotGenerator(
-                    df, args.column, args.output, args.limits
-                )
-            else:
-                generator = HistogramGenerator(
-                    df, args.column, args.output, args.limits
-                )
-        
-        elif args.plot_type == 'scatter':
-            if not args.x_col or not args.y_col:
-                raise ValueError("Для scatter plot необходимо указать --x-col и --y-col")
-            
-            generator = ScatterPlotGenerator(
-                df, args.x_col, args.y_col, args.output,
-                args.x_limits, args.y_limits
-            )
-        
-        # Генерация и сохранение графика
-        generator.generate()
-        print(f"График успешно сохранен в директорию: {args.output}")
+    # Шаг 3: Сбор параметров
+    params = {}
+    columns = visualizer.data.columns.tolist()
     
-    except FileNotFoundError:
-        print(f"Ошибка: файл {args.data} не найден")
-        exit(1)
-    except pd.errors.ParserError:
-        print(f"Ошибка чтения файла. Проверьте правильность разделителя (--sep)")
-        exit(1)
-    except Exception as e:
-        print(f"Ошибка: {str(e)}")
-        exit(1)
+    if plot_type in ['hist', 'box']:
+        params['column'] = get_column(columns, "анализа")
+        params['limits'] = get_limits("значений")
+    else:
+        params['x_col'] = get_column(columns, "оси X")
+        params['y_col'] = get_column(columns, "оси Y")
+        params['x_limits'] = get_limits("оси X")
+        params['y_limits'] = get_limits("оси Y")
+    
+    # Шаг 4: Папка для сохранения
+    output_dir = input("\n▸ Введите папку для сохранения (по умолчанию visualizations): ").strip()
+    if output_dir:
+        params['output_dir'] = output_dir
+    
+    # Создание графика
+    visualizer.create_plot(plot_type, **params)
 
 if __name__ == "__main__":
     main()
-
-"""
-Примеры для создания визуализаций
-python script.py histogram --data loco_11_corr.tsv --column "loco_11.tu17l2" --sep "\t"
-python script.py histogram --data loco_11_corr.tsv --column "loco_11.tu17l2" --limits 0 2000000 --sep "\t"
-python script.py scatter --data loco_11_corr.tsv --x-col "loco_11.tu17l2" --y-col "loco_11.tu17l3" --sep "\t" --x-limits 0 1500 --y-limits 0 2000
-python script.py boxplot --data loco_11_corr.tsv --column "loco_11.tu17l3" --limits 500 1500 --sep "\t"
-python script.py scatter --data loco_11_corr.tsv --x-col "loco_11.tu17l2" --y-col "loco_11.tu17l3" --sep "\t"
-"""
